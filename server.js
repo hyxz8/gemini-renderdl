@@ -1,148 +1,55 @@
-// 定义目标API地址
-const TARGET_URL = 'https://generativelanguage.googleapis.com';
+const express = require('express');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 
-// 主事件监听器
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
+const app = express();
+
+// 设置反向代理
+const apiProxy = createProxyMiddleware({
+  target: 'https://generativelanguage.googleapis.com', // 目标域名
+  changeOrigin: true, // 修改请求头中的 Origin 为目标域名
+  onProxyReq: (proxyReq, req, res) => {
+    // 移除所有隐私相关的请求头
+    const privacyHeaders = [
+      'x-forwarded-for', // 客户端 IP
+      'x-real-ip', // 客户端真实 IP
+      'cf-connecting-ip', // Cloudflare 客户端 IP
+      'true-client-ip', // 客户端真实 IP
+      'forwarded', // 代理链信息
+      'via', // 代理链信息
+      'x-cluster-client-ip', // 集群客户端 IP
+      'x-forwarded-host', // 原始主机信息
+      'x-forwarded-proto', // 原始协议信息
+      'x-originating-ip', // 原始 IP
+      'x-remote-ip', // 远程 IP
+      'x-remote-addr', // 远程地址
+      'x-envoy-external-address', // Envoy 外部地址
+      'x-amzn-trace-id', // AWS 跟踪 ID
+      'x-request-id', // 请求 ID
+      'x-correlation-id', // 关联 ID
+    ];
+    privacyHeaders.forEach((header) => proxyReq.removeHeader(header));
+  },
+  onProxyRes: (proxyRes, req, res) => {
+    // 移除所有隐私相关的响应头
+    const privacyHeaders = [
+      'x-powered-by', // 服务器技术信息
+      'server', // 服务器信息
+      'x-request-id', // 请求 ID
+      'x-correlation-id', // 关联 ID
+      'x-amzn-trace-id', // AWS 跟踪 ID
+      'via', // 代理链信息
+      'cf-ray', // Cloudflare 信息
+      'x-envoy-upstream-service-time', // Envoy 上游服务时间
+    ];
+    privacyHeaders.forEach((header) => delete proxyRes.headers[header]);
+  },
 });
 
-/**
- * 处理并转发请求到目标API
- * @param {Request} request - 原始请求对象
- * @returns {Response} 从目标API返回的响应或错误响应
- */
-async function handleRequest(request) {
-  try {
-    // 解析请求URL
-    const requestUrl = new URL(request.url);
-    const path = requestUrl.pathname + requestUrl.search;
-    
-    // 构建转发URL
-    const forwardUrl = new URL(path, TARGET_URL);
-    
-    // 提取请求方法和准备请求体
-    const method = request.method;
-    let requestBody = null;
-    
-    // 如果是包含数据的请求，尝试解析请求体
-    if (['POST', 'PUT', 'PATCH'].includes(method)) {
-      try {
-        // 克隆请求以避免消耗原始请求流
-        const requestClone = request.clone();
-        const contentType = request.headers.get('Content-Type') || '';
-        
-        if (contentType.includes('application/json')) {
-          requestBody = await requestClone.json();
-        } else {
-          requestBody = await requestClone.text();
-        }
-      } catch (error) {
-        // 如果无法解析请求体，继续处理请求
-        console.error('Failed to parse request body:', error);
-      }
-    }
-    
-    // 创建干净的头信息，只包含必要的头
-    const cleanHeaders = new Headers();
-    
-    // 设置内容类型
-    const contentType = request.headers.get('Content-Type');
-    if (contentType) {
-      cleanHeaders.set('Content-Type', contentType);
-    }
-    
-    // 转发授权信息，如果有的话
-    const authHeader = request.headers.get('Authorization');
-    if (authHeader) {
-      cleanHeaders.set('Authorization', authHeader);
-    }
-    
-    // 可以添加自定义API密钥，如果需要的话
-    // cleanHeaders.set('x-goog-api-key', 'YOUR_API_KEY');
-    
-    // 设置接受的响应类型
-    cleanHeaders.set('Accept', 'application/json');
-    
-    // 创建转发请求
-    const forwardRequest = new Request(forwardUrl.toString(), {
-      method: method,
-      headers: cleanHeaders,
-      body: requestBody ? (typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody)) : null,
-      redirect: 'follow'
-    });
-    
-    // 发送请求到目标API
-    const response = await fetch(forwardRequest);
-    
-    // 创建干净的响应头
-    const cleanResponseHeaders = new Headers();
-    
-    // 复制必要的响应头
-    const headersToKeep = [
-      'content-type',
-      'cache-control',
-      'etag',
-      'vary'
-    ];
-    
-    for (const header of headersToKeep) {
-      const value = response.headers.get(header);
-      if (value) {
-        cleanResponseHeaders.set(header, value);
-      }
-    }
-    
-    // 允许CORS，使其可以从任何源调用
-    cleanResponseHeaders.set('Access-Control-Allow-Origin', '*');
-    cleanResponseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    cleanResponseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    
-    // 显式删除任何安全相关的头信息
-    const securityHeaders = [
-      'content-security-policy',
-      'x-content-security-policy',
-      'x-frame-options',
-      'x-xss-protection',
-      'strict-transport-security'
-    ];
-    
-    for (const header of securityHeaders) {
-      cleanResponseHeaders.delete(header);
-    }
-    
-    // 返回响应，带有干净的头信息
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: cleanResponseHeaders
-    });
-  } catch (error) {
-    // 处理任何错误并返回适当的响应
-    console.error('Proxy error:', error);
-    return new Response(JSON.stringify({
-      error: 'Proxy Error',
-      message: error.message || 'An error occurred while processing your request'
-    }), {
-      status: 502,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      }
-    });
-  }
-}
+// 使用反向代理中间件
+app.use('/', apiProxy); // 直接代理根路径
 
-// 处理OPTIONS请求（预检请求）
-function handleOptions(request) {
-  const headers = new Headers({
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Max-Age': '86400'
-  });
-  
-  return new Response(null, {
-    status: 204,
-    headers
-  });
-}
+// 启动服务器
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
